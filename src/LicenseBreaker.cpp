@@ -20,8 +20,7 @@
 #include <be/interface/Font.h>
 #include <be/support/SupportDefs.h>
 
-extern "C" {
-}
+#include <udis86.h>
 
 #include "SetupView.h"
 #include "ElfUtils.h"
@@ -70,20 +69,17 @@ status_t LicenseBreaker::StartSaver(BView *view, bool preview)
 {
 	//SetTickSize(100000);
 
-	if (preview == true) {
-		mRunning = false;
-		return B_ERROR;
-	}
-	
 	mView = view;
 	
 	BFont font(be_fixed_font);
-	font.SetSize(16);
+	font.SetSize(preview ? 5 : 16);
 	view->SetFont(&font);
 	
 	mHighColor = 0;
 	
-	mLineHeight = 20;	
+	font_height fh;
+	font.GetHeight(&fh);
+	mLineHeight = (int)(fh.ascent + fh.descent + fh.leading);
 	mMaxLines = (view->Bounds().IntegerHeight() / mLineHeight) - 1;
 	mLine = 1;
 
@@ -104,6 +100,7 @@ void LicenseBreaker::Print(char* inString)
 	mLine++;
 	if (mLine > mMaxLines)
 	{
+		static int i;
 		mView->ScrollBy(0, mLineHeight);
 	}
 }
@@ -119,6 +116,7 @@ void LicenseBreaker::RotateHighColor(void)
 
 void LicenseBreaker::Draw(BView *view, int32 frame)
 {
+	static ud_t u;
 	if (mRunning == false) {
 		return;
 	}
@@ -131,12 +129,15 @@ void LicenseBreaker::Draw(BView *view, int32 frame)
 	{
 		view->SetLowColor(0, 0, 0);
 		view->FillRect(view->Bounds(), B_SOLID_LOW);
+		ud_init(&u);
+		ud_set_mode(&u, 32);
+		ud_set_syntax(&u, UD_SYN_INTEL);
 	}
 	
 	if (mSymbolTable == NULL)
 	{
 		char* error;
-		GetSymbolTable("/boot/beos/system/kernel_intel", &mSymbolTable, &error);
+		GetSymbolTable("/system/kernel_x86", &mSymbolTable, &error);
 	}
 	
 	if (mCurrentFunction == NULL)
@@ -152,7 +153,7 @@ void LicenseBreaker::Draw(BView *view, int32 frame)
 			mCode = (unsigned char*) malloc(mCurrentFunction->size);
 			if (mCode != NULL)
 			{
-				FILE* file = fopen("/boot/beos/system/kernel_intel", "rb");
+				FILE* file = fopen("/system/kernel_x86", "rb");
 				if (file != NULL)
 				{
 					fseek(file, mCurrentFunction->offset, SEEK_SET);
@@ -166,8 +167,11 @@ void LicenseBreaker::Draw(BView *view, int32 frame)
 			this->RotateHighColor();
 			
 			char string[1024];
-			sprintf(string, "Disassembling from %s (%s):", mCurrentFunction->name, "/boot/beos/system/kernel_intel");
+			sprintf(string, "Disassembling from %s:", mCurrentFunction->name);
 			this->Print(string);
+
+			ud_set_input_buffer(&u, mCode, mCurrentFunction->size);
+			return;
 		}
 	}
 
@@ -179,10 +183,13 @@ void LicenseBreaker::Draw(BView *view, int32 frame)
 	{
 		// Check if we're past the end of the current function
 		
-		char out[2048];
-		status_t err = disasm(mProgramCounter, 10, out, sizeof(out), NULL, 0, NULL, NULL);
-		if (err > 0)
+
+
+		const char* out;
+		size_t err = ud_disassemble(&u);
+		if (err)
 		{
+      		out = ud_insn_asm(&u);
 			// Convert the opcodes to hex
 			
 			char hex[20];
@@ -201,11 +208,12 @@ void LicenseBreaker::Draw(BView *view, int32 frame)
 			this->Print(string);
 	
 		}
-	
+
+
 		// Move to the next instruction
-	
+
 		mProgramCounter += err;
-		
+
 		if (mProgramCounter >= (mCode + mCurrentFunction->size))
 		{
 			free(mCode);
